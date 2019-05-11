@@ -21,6 +21,7 @@
 
 import random
 import time
+import math
 from util import nearestPoint
 from collections import deque
 
@@ -39,7 +40,7 @@ from captureAgents import CaptureAgent
 
 
 def createTeam(firstIndex, secondIndex, isRed,
-               first='OffDQNAgent', second='OffDQNAgent'):
+               first='OffDQNAgent', second='DefDQNAgent'):
     """
     This function should return a list of two agents that will form the
     team, initialized using firstIndex and secondIndex as their agent
@@ -358,6 +359,16 @@ class DQNAgent(CaptureAgent):
         
         return np.min([self.getMazeDistance(agent_pos, f)
                        for f in op_pos])
+    
+    def isDead(self, new_gs, old_gs):
+        new_loc = new_gs.getAgentPosition(self.index)
+        old_loc = old_gs.getAgentPosition(self.index)
+        op_pos = [new_gs.getAgentPosition(i)
+                  for i in self.getOpponents(new_gs)]
+        
+        if old_loc in op_pos and new_loc == self.start:
+            return True
+        return False
         
 class OffDQNAgent(DQNAgent):
     def getReward(self, new_gs, old_gs):
@@ -375,28 +386,34 @@ class OffDQNAgent(DQNAgent):
                     food_pos += [(i,j)] 
         
         reward = 0
-
-        # move closer to op in first 200 moves -> reward ^ if closer
-        if old_gs.data.timeleft > 1000:
-            reward += self.starting_reward(new_gs, old_gs)
-
-        # living penalty while on offensive side -> reward = -.03
+        
+        # living penalty while on offensive side -> -.03
         if old_agent.isPacman and new_agent.isPacman:
             reward -= .03
         
-        # min distance to food -> reward = -distance / 100
-        closest_food = np.min([self.getMazeDistance(new_loc, f)
-                               for f in food_pos])
-        reward -= self.min_dist_to_food(new_gs, new_loc) / float(50) + 1
-       
-        # pick up dot -> reward = 1
+        # living penalty while on defensive side -> -.05
+        if not old_agent.isPacman and not new_agent.isPacman:
+            reward -= .05
+
+        # move closer to op in first 100 moves -> reward ^ if closer
+        # if old_gs.data.timeleft > 1100:
+        #     reward += self.starting_reward(new_gs, old_gs)
+
+        # pick up dot -> 2
         r, c = new_loc
         if self.getFood(old_gs).data[r][c]:
-            reward += 1
+            reward += 2
         
-        # return dots to side -> reward = 2 * num carrying
+        # food far -> -1    food close -> 1
+        else:
+            closest_food = np.min([self.getMazeDistance(new_loc, f)
+                                   for f in food_pos])
+            reward -= self.min_dist_to_food(new_gs, new_loc) / float(50) * 2 - 1
+       
+        
+        # return dots to side -> reward = 3 * num carrying
         if old_agent.isPacman and not new_agent.isPacman:
-            reward += 2 * old_agent.num_carrying
+            reward += 3 * old_agent.num_carrying
         
         # died -> reward = -20
         if old_loc in op_pos and new_loc == self.start:
@@ -414,12 +431,33 @@ class DefDQNAgent(DQNAgent):
         old_loc = old_gs.getAgentPosition(self.index)
         op_pos = [old_gs.getAgentPosition(i)
                   for i in self.getOpponents(old_gs)]
+        op_indices = self.getOpponents(old_gs)
         
         reward = 0
         
-        # capture opponent -> reward = 20
-        # died -> reward = -20
-        # if opponent attacking -> reward = 100 - shortestdistance
-        # if opponent returns dots -> reward = -2 * num carrying
+        # living penalty while on defensive side -> reward = -.03
+        if not old_agent.isPacman and not new_agent.isPacman:
+            reward -= .03
+
+        # capture opponent -> 20
+        min_dist_to_op = self.min_dist_to_op(old_gs, new_loc)
+
+        if (min_dist_to_op == 0) and not (new_agent.isPacman):
+            reward += 20
+        
+        # Opponent far -> 0 Opponent close -> 1
+        else:
+            reward += math.abs(min_dist_to_op / float(100) - 1)
+
+        # died -> -50
+        if self.isDead(new_gs, old_gs):
+            reward -= 50
+    
+        # if opponent returns dots -> reward = -2 * num returned
+        old_num_returned = [old_gs.getAgentState(i).numReturned
+                             for i in op_indices]
+        new_num_returned = [new_gs.getAgentState(i).numReturned 
+                             for i in op_indices]
+        reward -= 2 * (sum(new_num_returned) - sum(old_num_returned))
         
         return reward
