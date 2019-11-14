@@ -23,6 +23,7 @@ import random
 import time
 import math
 import json
+import os
 from util import nearestPoint
 from collections import deque
 
@@ -32,7 +33,6 @@ from keras.layers import Dense
 from keras.optimizers import Adam
 
 from game import Directions
-# import game
 from captureAgents import CaptureAgent
 
 #################
@@ -91,15 +91,17 @@ class DQNAgent(CaptureAgent):
         '''
         print("REGISTERING INITIAL STATE... \n\n")
 
-        self.EPISODES = 5000
-        # self.index = index
+        train = True
+        
+        self.EPISODES = 10000
         self.memory = deque(maxlen=2000)
         self.alpha = 0.05
         self.gamma = 0.95    # discount rate
         self.epsilon = 1.0  # exploration rate
         self.epsilon_min = 0.05
-        self.epsilon_decay = 0.998
-        self.learning_rate = 0.001
+        self.epsilon_decay = 0.999
+        self.learning_rate = 0.002
+        self.epsilon = self.epsilon_min
 
         self.start = gs.getAgentPosition(self.index)
         CaptureAgent.registerInitialState(self, gs)
@@ -110,19 +112,23 @@ class DQNAgent(CaptureAgent):
 
         self.input_shape = rows*cols
         self.output_shape = len(self.actions)
-        self.model = self._build_model()
-        self.train(gs)
+        
+        if os.path.exists('DQNAgent%d.h5' % self.index):
+            self.model.load_weights("agent%d.h5" % self.index)
+        else:
+            self.model = self._build_model()
 
     def _build_model(self):
         # Neural Net for Deep-Q learning Model
         model = Sequential()
-        model.add(Dense(64, input_dim=self.input_shape, activation='relu'))
-        model.add(Dense(32, activation='relu'))
+        model.add(Dense(64, input_dim=self.input_shape))
+        model.add(Dense(32))
         model.add(Dense(self.output_shape, activation='linear'))
         model.compile(loss='mse',
                       optimizer=Adam(lr=self.learning_rate))
         return model
 
+    # DEPRECATED
     def train(self, gs):
 
         batch_size = 32
@@ -133,19 +139,20 @@ class DQNAgent(CaptureAgent):
             legal_actions = gs.getLegalActions(self.index)
 
             best_index = self.act(gs)
-            best_action = self.actions[best_index]
+            best_action = self.chooseAction(gs)
 
             next_gs = self.getSuccessor(gs, best_action)
             next_state = next_gs.getAgentState(self.index)
             reward = self.getReward(next_gs, gs)
 
             self.remember(gs, best_index, reward, next_gs)
-            
+
             with open("memory.json", "w") as write_file:
-                json.dump((gs.getAgentPosition(self.index), 
-                           best_action, reward, 
+                json.dump((self.index,
+                           gs.getAgentPosition(self.index),
+                           best_action, reward,
                            next_gs.getAgentPosition(self.index)
-                          ), write_file)
+                           ), write_file)
 
             gs = next_gs
 
@@ -155,54 +162,11 @@ class DQNAgent(CaptureAgent):
             if (e % 100 == 0):
                 print("Episode: %d" % e)
 
-            # scores = [long("-inf")] * len(self.actions)
-            # for i, a in enumerate(self.actions):
-            #     if a in legal_actions:
-            #         data = self.preprocessGS(gs, a)
-            #         scores[i] = self.model.evaluate(data)
-            # best_action = self.actions[np.argmax(scores)]
-
-            # successor = self.getSuccessor(gs, best_action)
-            # reward = self.getReward(successor, gs)
-
-            # self.model.fit(np.argmax(scores), reward)
-
-            # action = self.act(gs, state)
-            # successor = self.getSuccessor(gs, action)
-
-            # next_state = successor.getAgentState(self.index)
-            # reward = self.getReward(successor, gs)
-            # self.remember(state, action, reward, next_state.start.pos, gs)
-
-            # gs = successor
+        self.model.save_weights("agent%d.h5" % self.index)
+        print('Finished Training!')
 
     def remember(self, state, action, reward, next_state):
         self.memory.append((state, action, reward, next_state))
-
-    def act(self, gs):
-        legal_actions = gs.getLegalActions(self.index)
-
-        # Random Action
-        if np.random.rand() <= self.epsilon:
-            return self.actions.index(random.choice(legal_actions))
-
-        # Predict best action
-        act_values = self.model.predict(self.preprocessGS(gs))
-        # Set illegal actions to 0
-        # for i, a in enumerate(self.actions):
-        #     if a not in gs.getLegalActions(self.index):
-        #         act_values[0][i] = 0
-        # best_action = np.argmax(act_values[0])
-        legal_actions = []
-        for i, a in enumerate(self.actions):
-            if a not in gs.getLegalActions(self.index):
-                legal_actions += [i]
-        best_action = np.argmax(legal_actions)
-
-        # Trains model for illegal actions
-        # self.model.fit(self.preprocessGS(gs), act_values, epochs=1, verbose=0)
-
-        return best_action # returns action
 
     def replay(self, batch_size):
         # Samples random memories of batch_size
@@ -213,64 +177,26 @@ class DQNAgent(CaptureAgent):
         for gs, action, reward, next_gs in minibatch:
             state = gs.getAgentState(self.index)
             next_state = next_gs.getAgentState(self.index)
-            # legal_actions = gs.getLegalActions(self.index)
 
             # Update to q value
             gs_q_vals = self.model.predict(self.preprocessGS(gs))
             best_q_val = np.amax(gs_q_vals[0])
-            next_best_q_val = np.amax(self.model.predict(self.preprocessGS(next_gs))[0])
-            
+            next_best_q_val = np.amax(
+                self.model.predict(self.preprocessGS(next_gs))[0])
+
             diff = (reward + self.gamma * next_best_q_val) - best_q_val
-            # print("diff: %d" % diff)
-            gs_q_vals[0][action] += diff
+            gs_q_vals[0][self.actions.index(action)] = diff
 
-            loss = self.model.fit(self.preprocessGS(gs), 
+            loss = self.model.fit(self.preprocessGS(gs),
                                   gs_q_vals, epochs=1, verbose=0)
-            
-            # target = (reward + self.gamma * \
-            #     np.amax(self.model.predict(self.preprocessGS(next_gs))[0]))
 
-            # target_f = self.model.predict(self.preprocessGS(gs))
-            # Sets illegal actions to 0
-            # for i, a in enumerate(self.actions):
-            #     if a not in gs.getLegalActions(self.index):
-            #         target_f[0][i] = -10
-            # Sets action q value to target
-            # target_f[0][action] = target
-         
-            # print(target_f[0])
-            
-            # loss = self.model.fit(self.preprocessGS(gs), target_f, epochs=1, verbose=0)
             avg_loss += loss.history['loss']
-        
-        print("Replay Avg Loss: " + str(np.average(avg_loss)))
-        
+
+        # print("Replay Avg Loss: " + str(np.average(avg_loss)))
+
         # Decrease epsilon
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
-
-
-
-
-
-        #     # Predicts actions values for next_state
-        #     act_vals = self.model.predict(np.reshape(
-        #         next_state, (1, self.state_size)))[0]
-        #     possible_act_vals = act_vals[[
-        #         self.actions.index(a) for a in legal_actions]]
-
-        #     # Updates target values for new action value: target
-        #     target = (reward + self.gamma * np.amax(possible_act_vals))
-        #     target_f = self.model.predict(
-        #         np.reshape(state, (1, self.state_size)))
-        #     target_f[0][self.actions.index(action)] = target
-
-        #     # Trains model on state to target_f
-        #     self.model.fit(np.reshape(state, (1, self.state_size)),
-        #                    target_f, epochs=1, verbose=0)
-
-        # if self.epsilon > self.epsilon_min:
-        #     self.epsilon *= self.epsilon_decay
 
     def getSuccessor(self, gs, action):
         """
@@ -284,116 +210,119 @@ class DQNAgent(CaptureAgent):
         else:
             return successor
 
-    def getReward(self, new_gs, old_gs):
-
-        reward = 0
-        new_loc = new_gs.getAgentPosition(self.index)
-        old_loc = old_gs.getAgentPosition(self.index)
-        new_agent = new_gs.getAgentState(self.index)
-        old_agent = old_gs.getAgentState(self.index)
-        op_pos = [old_gs.getAgentPosition(i)
-                  for i in self.getOpponents(old_gs)]
-
-        # first few moves
-        if old_gs.data.timeleft > 1150:
-            reward = -.1 * (np.average([self.getMazeDistance(old_loc, op) for op in op_pos]))
-        
-        # if attacking
-        elif old_agent.isPacman:
-            # if ate food -> reward: 1
-            r, c = new_loc
-            if self.getFood(old_gs).data[r][c]:
-                reward += 1
-            # if ate opponent -> reward: 10
-            if (old_loc in op_pos) and (new_loc == self.start):
-                reward -= 20
-
-        # if defending
-        else:
-            # if died -> reward: -10
-            op_pos = [old_gs.getAgentPosition(i) 
-                      for i in self.getOpponents(old_gs)]
-            if new_loc in op_pos:
-                reward += 20
-
-        return reward / float(100)
-
     def chooseAction(self, gs):
         """
         Picks among actions randomly.
         """
-        state = gs.getAgentPosition(self.index)
-        actions = gs.getLegalActions(self.index)
+        # state = gs.getAgentPosition(self.index)
+        # actions = gs.getLegalActions(self.index)
 
         '''
         You should change this in your own agent.
         '''
         "*** YOUR CODE HERE ***"
-        return self.actions[self.act(gs)]
-        # Random choice
-        # if np.random.rand() <= self.epsilon:
-        #     return random.choice(actions)
+        batch_size = 16
 
-        # # Q scores approximated by model
-        # scores = [long("-inf")] * len(self.actions)
-        # for i, a in enumerate(self.actions):
-        #     if a in actions:
-        #         data = self.preprocessGS(gs, a)
-        #         scores[i] = self.model.evaluate(data)
-        # return self.actions[np.argmax(scores)]
+        # Update memory if possible
+        last_gs = self.getPreviousObservation()
+        if last_gs:
+            next_gs = self.getCurrentObservation()
+            if next_gs.data.timeleft <= 5:
+                self.model.save('DQNAgent%d.h5' % self.index)
+            reward = self.getReward(gs, last_gs)
+            action = self.getDirection(last_gs.getAgentPosition(
+                self.index), gs.getAgentPosition(self.index))
+            self.memory.append((last_gs, action, reward, gs))
 
-    def load(self, name):
-        self.model.load_weights(name)
+            with open("memory.json", "w") as write_file:
+                json.dump((self.index,
+                        last_gs.getAgentPosition(self.index),
+                        action, reward,
+                        gs.getAgentPosition(self.index)
+                        ), write_file)
 
-    def save(self, name):
-        self.model.save_weights(name)
+        # Replay
+        if len(self.memory) > batch_size:
+            self.replay(batch_size)
+        
+        legal_actions = gs.getLegalActions(self.index)
+
+        # Random Action
+        if np.random.rand() <= self.epsilon:
+            best_action = random.choice(legal_actions)
+        # Best Action
+        else:
+            act_values = self.model.predict(self.preprocessGS(gs))
+            legal_actions_i = [self.actions.index(a) for a in legal_actions]
+            best_action = np.argmax(act_values[0][legal_actions_i])
+            best_action = self.actions[legal_actions_i[best_action]]
+
+        return best_action  # returns action
 
     def preprocessGS(self, gs):
         data = []
         layout = gs.data.layout.layoutText
+        # new_layout = np.zeros(((16,)))
         for i, row in enumerate(layout):
-            row = row.replace(" ", "0") \
+            new_row = row.replace(" ", "0") \
                 .replace("%", "5") \
                 .replace(".", "6") \
                 .replace("o", "7")
-            data += [int(x) / 7 for x in list(row)]
+            data += [float(x) / float(7) for x in list(new_row)]
         # + [str(self.actions.index(action))]
-        return np.reshape(np.asarray(data, dtype=int).flatten(), (1, self.input_shape))
-    
-    def starting_reward(self, new_gs, old_gs):
-        new_loc = new_gs.getAgentPosition(self.index)
-        op_pos = [new_gs.getAgentPosition(i)
-                  for i in self.getOpponents(new_gs)]
-        return (- np.amin([self.getMazeDistance(new_loc, op) 
-                        for op in op_pos]) / float(50)) + 1
-    
+        return np.reshape(np.asarray(data, dtype=float).flatten(), (1, self.input_shape))
+
     def min_dist_to_food(self, gs, agent_pos):
         food_pos = []
         for i, r in enumerate(self.getFood(gs).data):
             for j, c in enumerate(r):
                 if self.getFood(gs).data[i][j]:
                     food_pos += [(i, j)]
-        
+
         return np.min([self.getMazeDistance(agent_pos, f)
                        for f in food_pos])
 
     def min_dist_to_op(self, gs, agent_pos):
         op_pos = [gs.getAgentPosition(i)
                   for i in self.getOpponents(gs)]
-        
+
         return np.min([self.getMazeDistance(agent_pos, f)
                        for f in op_pos])
-    
-    def isDead(self, new_gs, old_gs):
+
+    def isAgentDead(self, new_gs, old_gs):
         new_loc = new_gs.getAgentPosition(self.index)
         old_loc = old_gs.getAgentPosition(self.index)
         op_pos = [new_gs.getAgentPosition(i)
                   for i in self.getOpponents(new_gs)]
-        
+
         if old_loc in op_pos and new_loc == self.start:
             return True
         return False
-        
+    
+    def isOpDead(self, new_gs, old_gs):
+        op_i = self.getOpponents(new_gs)
+        new_op_locs = [new_gs.getAgentPosition(i) for i in op_i]
+        old_op_locs = [old_gs.getAgentPosition(i) for i in op_i]
+        old_loc = old_gs.getAgentPosition(self.index)
+        new.gs.getAgentState.start
+
+        if old_loc in op_pos and new_loc == self.start:
+            return True
+        return False
+
+    def getDirection(self, prev_pos, curr_pos):
+        if prev_pos[0] < curr_pos[0]:
+            return 'West'
+        elif prev_pos[0] > curr_pos[0]:
+            return 'East'
+        else:
+            if prev_pos[1] < curr_pos[1]:
+                return 'North'
+            elif prev_pos[1] > curr_pos[1]:
+                return 'South'
+            else:
+                return 'Stop'
+
 class OffDQNAgent(DQNAgent):
     def getReward(self, new_gs, old_gs):
         # init
@@ -401,48 +330,56 @@ class OffDQNAgent(DQNAgent):
         old_agent = old_gs.getAgentState(self.index)
         new_loc = new_gs.getAgentPosition(self.index)
         old_loc = old_gs.getAgentPosition(self.index)
-        op_pos = [new_gs.getAgentPosition(i)
-                  for i in self.getOpponents(new_gs)]
+        # op_pos = [new_gs.getAgentPosition(i)
+        #           for i in self.getOpponents(new_gs)]
         food_pos = []
         for i, r in enumerate(self.getFood(old_gs).data):
             for j, c in enumerate(r):
                 if self.getFood(old_gs).data[i][j]:
-                    food_pos += [(i,j)] 
+                    food_pos += [(i, j)]
         
-        reward = 1
+        reward = 0
         
-        # living penalty while on offensive side -> -.03
-        if (old_agent.isPacman) and (new_agent.isPacman):
-            reward -= .03
-            
-        # living penalty while on defensive side -> -.05
-        if not (old_agent.isPacman) and not (new_agent.isPacman):
-            reward -= .05
-       
+        # Move closer to food
+        reward += 20.0 * (self.min_dist_to_food(old_gs, old_loc) -
+                                self.min_dist_to_food(old_gs, new_loc)) / float(old_agent.numCarrying + 1) - 3.0
         
-        # pick up dot -> 2
+        # No movement
+        if old_loc == new_loc:
+            reward -= 4.0
+
+        # Close to Food
+        reward += (50.0 - self.min_dist_to_food(old_gs, new_loc)) / 10.0
+
+        # Holding too many
+        reward -= new_agent.numCarrying * 1.5
+        
+        # pick up dot
         r, c = new_loc
         if self.getFood(old_gs).data[r][c]:
-            reward += 2
-
-        # food far -> -1    food close -> 1
-        else:
-            # closest_food = np.min([self.getMazeDistance(new_loc, f)
-            #                         for f in food_pos])
-            reward -= self.min_dist_to_food(old_gs, new_loc) \
-                        / float(20) - 1
-    
-        # return dots to side -> reward = 3 * num carrying
-        reward += 3 * (new_agent.numReturned - old_agent.numReturned)
+            reward += 50.0
         
-        # died -> reward = -20
-        if self.isDead(new_gs, old_gs):
-            reward -= 20
+        # return dots to side
+        reward += 200.0 * (new_agent.numReturned - old_agent.numReturned)
+
+        # died 
+        if self.isAgentDead(new_gs, old_gs):
+            reward -= 500.0
+        
+        # close to op
+        if new_agent.isPacman:
+            old_distances = min(
+                old_gs.agentDistances[self.getOpponents(old_gs)])
+            new_distances = min(
+                old_gs.agentDistances[self.getOpponents(old_gs)])
+            if new_distances < 4:
+                reward -= (5 - new_distances) * 20.0
 
         with open("off_rewards.json", "w") as write_file:
             json.dump(reward, write_file)
-        
-        return (reward / float(20))
+
+        return reward
+
 
 class DefDQNAgent(DQNAgent):
     def getReward(self, new_gs, old_gs):
@@ -451,41 +388,53 @@ class DefDQNAgent(DQNAgent):
         old_agent = old_gs.getAgentState(self.index)
         new_loc = new_gs.getAgentPosition(self.index)
         old_loc = old_gs.getAgentPosition(self.index)
-        op_pos = [old_gs.getAgentPosition(i)
-                  for i in self.getOpponents(old_gs)]
+        # op_pos = [old_gs.getAgentPosition(i)
+        #           for i in self.getOpponents(old_gs)]
         op_indices = self.getOpponents(old_gs)
-        
-        reward = 1
-        
-        # living penalty while on defensive side -> reward = -.03
-        if not (new_agent.isPacman):
-            reward -= .03
 
-            # capture opponent -> 20
-            min_dist_to_op = self.min_dist_to_op(old_gs, new_loc)
-            if(min_dist_to_op == 0):
-                reward += 20
+        reward = 0
+        
+
+        # if not (new_agent.isPacman):
+        #     min_dist_to_op = self.min_dist_to_op(old_gs, new_loc)
+        #     reward = float(50) - min_dist_to_op
             
-            # Opponent far -> -1 Opponent close -> 1
-            else:
-                reward += math.abs(min_dist_to_op / float(50) - 1)
+        #     if(min_dist_to_op == 0):
+        #         reward += 200
         
-        # living penalty while on offensive side -> reward = -.05
-        else:
-            reward -= .05
-
-        # died -> -50
-        if self.isDead(new_gs, old_gs):
+        if new_agent.isPacman:
             reward -= 50
-    
-        # if opponent returns dots -> reward = -3 * num returned
-        old_num_returned = [old_gs.getAgentState(i).numReturned
-                             for i in op_indices]
-        new_num_returned = [new_gs.getAgentState(i).numReturned 
-                             for i in op_indices]
-        reward -= 3 * (sum(new_num_returned) - sum(old_num_returned))
-        
+
+
+        # living penalty while on defensive side -> reward = -.03
+        # if not (new_agent.isPacman):
+        #     reward -= .03
+
+        #     # capture opponent -> 20
+        #     min_dist_to_op = self.min_dist_to_op(old_gs, new_loc)
+        #     if(min_dist_to_op == 0):
+        #         reward += 20
+
+        #     # Opponent far -> -1 Opponent close -> 1
+        #     else:
+        #         reward += math.abs(min_dist_to_op / float(50) - 1)
+
+        # living penalty while on offensive side -> reward = -.05
+        # else:
+        #     reward -= .05
+
+        # # died -> -50
+        # if self.isDead(new_gs, old_gs):
+        #     reward -= 50
+
+        # # if opponent returns dots -> reward = -3 * num returned
+        # old_num_returned = [old_gs.getAgentState(i).numReturned
+        #                     for i in op_indices]
+        # new_num_returned = [new_gs.getAgentState(i).numReturned
+        #                     for i in op_indices]
+        # reward -= 3 * (sum(new_num_returned) - sum(old_num_returned))
+
         with open("def_rewards.json", "w") as write_file:
             json.dump(reward, write_file)
-        
-        return reward / float(20)
+
+        return reward
